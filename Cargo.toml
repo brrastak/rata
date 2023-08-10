@@ -12,6 +12,7 @@ rtic = {version = "2.0.0-alpha.1", features = ["thumbv7-backend"]}
 # rtic-sync = "1.0.1"
 usb-device = "0.2.9"
 usbd-serial = "0.1.1"
+pcf857x = "0.4.0"
 
 [dependencies.stm32f1xx-hal]
 version = "0.10.0"
