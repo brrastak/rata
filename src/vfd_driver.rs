@@ -2,8 +2,7 @@
 use embedded_hal::blocking::i2c::Write;
 use pcf857x::Pcf8574;
 
-pub struct VfdControl
-{
+pub struct VfdControl {
     digit: [u16; 5],
 }
 

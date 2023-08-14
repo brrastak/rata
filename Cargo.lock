@@ -45,6 +45,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
+name = "bme280"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32c139eaf2284d0c91a25f61d84dd326444cace86cb0371f45d71d2d055ba432"
+dependencies = [
+ "embedded-hal",
+]
+
+[[package]]
 name = "bxcan"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -55,6 +64,12 @@ dependencies = [
  "nb 1.1.0",
  "vcell",
 ]
+
+[[package]]
+name = "byteorder"
+version = "1.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
 
 [[package]]
 name = "cfg-if"
@@ -121,6 +136,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-sdmmc"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f4d14180a76a8af24a45a0e1a4f9c97491b05a3b962d59d5e4ce0e6ab103736"
+dependencies = [
+ "byteorder",
+ "embedded-hal",
+ "log",
+]
+
+[[package]]
 name = "fugit"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -184,6 +210,12 @@ dependencies = [
  "autocfg",
  "hashbrown",
 ]
+
+[[package]]
+name = "log"
+version = "0.4.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
 
 [[package]]
 name = "mcp4725"
@@ -286,8 +318,10 @@ dependencies = [
 name = "rata"
 version = "0.1.0"
 dependencies = [
+ "bme280",
  "cortex-m",
  "embedded-hal",
+ "embedded-sdmmc",
  "mcp4725",
  "panic-rtt-target",
  "pcf857x",

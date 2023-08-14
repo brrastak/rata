@@ -15,7 +15,8 @@ use stm32f1xx_hal:: {
         // afio::*,
         // timer::*,
         adc::*,
-        i2c::*,
+        i2c::{self, *},
+        spi::{self, *},
     };
 use rtic_monotonics::systick::*;
 use usb_device::prelude::*;
@@ -23,8 +24,11 @@ use usbd_serial::{SerialPort, USB_CLASS_CDC};
 use pcf857x::{Pcf8574, SlaveAddr};
 use mcp4725::*;
 use shared_bus;
+use embedded_sdmmc::*;
+use bme280::i2c::BME280;
 
 use rata::vfd_driver::{VfdDriver, VfdControl};
+use rata::button::ThreeButtons;
 
 
 #[rtic::app(device = stm32f1xx_hal::pac, peripherals = true, dispatchers = [CAN_RX1])]
@@ -34,7 +38,8 @@ mod app {
 
     #[shared]
     struct Shared {
-        disp: VfdControl
+        disp: VfdControl,
+        adc: Adc<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::ADC1>,
     }
 
     // Local resources go here
@@ -48,9 +53,12 @@ mod app {
         high2: Pin<'B', 14, Output>,
         low2: Pin<'A', 9, Output>,
         heater_voltage: Pin<'B', 1, Analog>,
-        adc: Adc<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::ADC1>,
         dac: MCP4725<BlockingI2c<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::I2C2, (Pin<'B', 10, Alternate<OpenDrain>>, Pin<'B', 11, Alternate<OpenDrain>>)>>,
         i2c_bus: shared_bus::BusManager<shared_bus::NullMutex<BlockingI2c<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::I2C1, (Pin<'B', 8, Alternate<OpenDrain>>, Pin<'B', 9, Alternate<OpenDrain>>)>>>,
+        light_sensor: Pin<'A', 0, Analog>,
+        button_col: (Pin<'A', 5>, Pin<'A', 6>, Pin<'A', 7>),
+        button_row: (Pin<'B', 12, Output>, Pin<'B', 2, Output>, Pin<'B', 0, Output>),
+        delay: stm32f1xx_hal::timer::Delay<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::TIM2, 1000000>,
     }
 
     #[init]
@@ -94,7 +102,24 @@ mod app {
         let i2c1_sda = gpiob.pb9.into_alternate_open_drain(&mut gpiob.crh);
         let i2c2_sck = gpiob.pb10.into_alternate_open_drain(&mut gpiob.crh);
         let i2c2_sda = gpiob.pb11.into_alternate_open_drain(&mut gpiob.crh);
-        
+        let (pa15, pb3, pb4) = afio.mapr.disable_jtag(gpioa.pa15, gpiob.pb3, gpiob.pb4);
+        let spi_cs = pa15.into_push_pull_output(&mut gpioa.crh);
+        let spi_pins = (
+            pb3.into_alternate_push_pull(&mut gpiob.crl),
+            pb4.into_floating_input(&mut gpiob.crl),
+            gpiob.pb5.into_alternate_push_pull(&mut gpiob.crl)
+        );
+        let light_sensor = gpioa.pa0.into_analog(&mut gpioa.crl);
+        let button_col = (
+            gpioa.pa5.into_floating_input(&mut gpioa.crl),
+            gpioa.pa6.into_floating_input(&mut gpioa.crl),
+            gpioa.pa7.into_floating_input(&mut gpioa.crl),
+        );
+        let button_row = (
+            gpiob.pb12.into_push_pull_output_with_state(&mut gpiob.crh, High),
+            gpiob.pb2.into_push_pull_output_with_state(&mut gpiob.crl, High),
+            gpiob.pb0.into_push_pull_output_with_state(&mut gpiob.crl, High),
+        );
 
         let mut delay = cx.device.TIM2.delay_us(&clocks);
         delay.delay_ms(500u32);
@@ -114,7 +139,7 @@ mod app {
             cx.device.I2C1,
             (i2c1_sck, i2c1_sda),
             &mut afio.mapr, 
-            Mode::Fast {
+            i2c::Mode::Fast {
                 frequency: 400.kHz(),
                 duty_cycle: DutyCycle::Ratio16to9,
             }, 
@@ -128,7 +153,7 @@ mod app {
         let audio_i2c = BlockingI2c::i2c2(
             cx.device.I2C2,
             (i2c2_sck, i2c2_sda),
-            Mode::Fast {
+            i2c::Mode::Fast {
                 frequency: 400.kHz(),
                 duty_cycle: DutyCycle::Ratio16to9,
             }, 
@@ -141,19 +166,36 @@ mod app {
         dac.set_dac_fast(PowerDown::Normal, 0x000).ok();
         amp_enable.set_high();
 
-        let disp = VfdControl::new();
+        let mut disp = VfdControl::new();
+
+        // let spi_mode = spi::Mode {
+        //     polarity: Polarity::IdleLow,
+        //     phase: Phase::CaptureOnFirstTransition,
+        // };
+        // let spi = Spi::spi1(
+        //     cx.device.SPI1, spi_pins, &mut afio.mapr, spi_mode, 100.kHz(), clocks);
+        // let sd_card = SdCard::new(
+        //     spi, spi_cs, delay);
+        // let volume = match sd_card.num_bytes() {
+        //     Ok(volume) => volume / 10_000,
+        //     Err(_) => 0
+        // };
+        // disp.set_4digits(volume as u16).ok();
 
 
         beep::spawn().ok();
         // usb::spawn().ok();
         heater::spawn().ok();
         audio::spawn().ok();
-        disp::spawn().ok();
+        // voltage::spawn().ok();
         vfd::spawn().ok();
+        // light::spawn().ok();
+        button::spawn().ok();
 
         (
             Shared {
-                disp
+                disp,
+                adc,
             },
             Local {
                 beep,
@@ -164,9 +206,12 @@ mod app {
                 high2,
                 low2,
                 heater_voltage,
-                adc,
                 dac,
                 i2c_bus,
+                light_sensor,
+                button_col,
+                button_row,
+                delay
             },
         )
 
@@ -369,17 +414,19 @@ mod app {
     //     }
     // }
 
-    #[task(local = [heater_voltage, adc], shared = [disp], priority = 1)]
-    async fn disp(cx: disp::Context) {
+    #[task(shared = [disp, adc], local = [heater_voltage], priority = 1)]
+    async fn voltage(cx: voltage::Context) {
 
         let heater_voltage = cx.local.heater_voltage;
-        let adc = cx.local.adc;
+        let mut adc = cx.shared.adc;
         let mut disp = cx.shared.disp;
 
         loop {
+            
+            let data = adc.lock(|adc| {
 
-            let data: u16 = adc.read( heater_voltage).unwrap();
-            // let data = 1234;
+                adc.read( heater_voltage).unwrap()
+            });
 
             disp.lock(|disp| {
 
@@ -391,10 +438,80 @@ mod app {
         }
     }
 
-    #[task(local = [i2c_bus], shared = [disp], priority = 1)]
+    #[task(shared = [disp, adc], local = [light_sensor], priority = 1)]
+    async fn light(cx: light::Context) {
+
+        let light = cx.local.light_sensor;
+        let mut adc = cx.shared.adc;
+        let mut disp = cx.shared.disp;
+
+        loop {
+            
+            let data = adc.lock(|adc| {
+
+                adc.read( light).unwrap()
+            });
+
+            disp.lock(|disp| {
+
+                disp.toggle_dp();
+                disp.set_4digits(data).ok();
+            });
+
+            Systick::delay(100.millis()).await;
+        }
+    }
+
+    #[task(shared = [disp], local = [button_col, button_row], priority = 1)]
+    async fn button(cx: button::Context) {
+
+        let btn_col = cx.local.button_col;
+        let btn_row = cx.local.button_row;
+        let mut disp = cx.shared.disp;
+
+        let mut btn147 = ThreeButtons::new(
+            (&btn_col.0, &btn_col.1, &btn_col.2), &mut btn_row.0);
+        let mut btn258 = ThreeButtons::new(
+            (&btn_col.0, &btn_col.1, &btn_col.2), &mut btn_row.1);
+        let mut btn369 = ThreeButtons::new(
+            (&btn_col.0, &btn_col.1, &btn_col.2), &mut btn_row.2);
+
+        let mut pressed = [false; 10];
+
+        loop {
+            
+            btn147.prepare();
+            Systick::delay(1.millis()).await;
+            (pressed[1], pressed[4], pressed[7]) = btn147.is_pressed();
+            btn258.prepare();
+            Systick::delay(1.millis()).await;
+            (pressed[2], pressed[5], pressed[8]) = btn258.is_pressed();
+            btn369.prepare();
+            Systick::delay(1.millis()).await;
+            (pressed[3], pressed[6], pressed[9]) = btn369.is_pressed();
+
+            let mut number = 0;
+            for (index, pressed) in pressed.iter().enumerate() {
+                if *pressed {
+                    number = index as u16;
+                }
+            };
+
+            disp.lock(|disp| {
+
+                disp.toggle_dp();
+                disp.set_4digits(number).ok();
+            });
+
+            Systick::delay(10.millis()).await;
+        }
+    }
+
+    #[task(shared = [disp], local = [i2c_bus, delay], priority = 1)]
     async fn vfd(cx: vfd::Context) {
 
         let i2c_bus = cx.local.i2c_bus;
+        let mut delay = cx.local.delay;
         let mut disp = cx.shared.disp;
         
         let high = Pcf8574::new(
@@ -403,6 +520,11 @@ mod app {
         let low = Pcf8574::new(
             i2c_bus.acquire_i2c(), 
             SlaveAddr::Alternative(false, false, true));
+
+        // let temp_sensor = BME280::new_primary(
+        //     i2c_bus.acquire_i2c(), 
+        //     *delay);
+        
 
         let mut vfd = VfdDriver::new(high, low);
 
