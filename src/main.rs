@@ -22,7 +22,9 @@ use usb_device::prelude::*;
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 use pcf857x::{Pcf8574, SlaveAddr};
 use mcp4725::*;
+use shared_bus;
 
+use rata::vfd_driver::{VfdDriver, VfdControl};
 
 
 #[rtic::app(device = stm32f1xx_hal::pac, peripherals = true, dispatchers = [CAN_RX1])]
@@ -31,7 +33,9 @@ mod app {
 
 
     #[shared]
-    struct Shared {}
+    struct Shared {
+        disp: VfdControl
+    }
 
     // Local resources go here
     #[local]
@@ -46,6 +50,7 @@ mod app {
         heater_voltage: Pin<'B', 1, Analog>,
         adc: Adc<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::ADC1>,
         dac: MCP4725<BlockingI2c<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::I2C2, (Pin<'B', 10, Alternate<OpenDrain>>, Pin<'B', 11, Alternate<OpenDrain>>)>>,
+        i2c_bus: shared_bus::BusManager<shared_bus::NullMutex<BlockingI2c<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::I2C1, (Pin<'B', 8, Alternate<OpenDrain>>, Pin<'B', 9, Alternate<OpenDrain>>)>>>,
     }
 
     #[init]
@@ -103,21 +108,6 @@ mod app {
         };
         let usb_bus = UsbBus::new(usb);
 
-        // let pwm_pins = (
-        //     high1.into_alternate_push_pull(&mut gpioa.crh), 
-        //     low2.into_alternate_push_pull(&mut gpioa.crh));
-        // let mut pwm = cx.device.TIM1.pwm_us(
-        //     pwm_pins, 
-        //     &mut afio.mapr,
-        //     1000.micros(),
-        //     &clocks);
-        // let max = pwm.get_max_duty();
-        // let mut channel = pwm.split();
-        // channel.0.set_duty(max / 2);
-        // channel.1.set_duty(max / 2);
-        // channel.0.enable();
-        // channel.1.enable();
-
         let adc = Adc::adc1(cx.device.ADC1, clocks);
 
         let i2c = BlockingI2c::i2c1(
@@ -133,17 +123,7 @@ mod app {
             10,
             1000,
             1000);
-
-        let mut vfd = Pcf8574::new(
-            i2c, 
-            SlaveAddr::default());
-        vfd.set(0xff).ok();
-        let i2c = vfd.destroy();
-
-        let mut vfd = Pcf8574::new(
-            i2c, 
-            SlaveAddr::Alternative(false, false, true));
-        vfd.set(0x00).ok();
+        let i2c_bus = shared_bus::BusManagerSimple::new(i2c);
   
         let audio_i2c = BlockingI2c::i2c2(
             cx.device.I2C2,
@@ -161,14 +141,20 @@ mod app {
         dac.set_dac_fast(PowerDown::Normal, 0x000).ok();
         amp_enable.set_high();
 
+        let disp = VfdControl::new();
+
 
         beep::spawn().ok();
         // usb::spawn().ok();
         heater::spawn().ok();
         audio::spawn().ok();
+        disp::spawn().ok();
+        vfd::spawn().ok();
 
         (
-            Shared {},
+            Shared {
+                disp
+            },
             Local {
                 beep,
                 switch,
@@ -180,6 +166,7 @@ mod app {
                 heater_voltage,
                 adc,
                 dac,
+                i2c_bus,
             },
         )
 
@@ -198,25 +185,18 @@ mod app {
         
     // }
 
-    #[task(local = [beep, heater_voltage, adc], priority = 1)]
+    #[task(local = [beep], priority = 1)]
     async fn beep(cx: beep::Context) {
 
         let beep = cx.local.beep;
-        let heater_voltage = cx.local.heater_voltage;
-        let adc = cx.local.adc;
 
         loop {
 
-            let data: u16 = adc.read( heater_voltage).unwrap();
-
-            if data > 1300 {
-
-                beep.set_high();
-                Systick::delay(1.millis()).await;
-            }
+            beep.set_high();
+            Systick::delay(1.millis()).await;
 
             beep.set_low();
-            Systick::delay(2000.millis()).await;
+            Systick::delay(1000.millis()).await;
         }
     }
 
@@ -295,51 +275,145 @@ mod app {
         }
 
         loop {
-            Systick::delay(1.millis()).await;
             high1.set_low();
             low1.set_low();
             high2.set_high();
             low2.set_high();
-
             Systick::delay(10.millis()).await;
+
             high1.set_high();
             low1.set_high();
             high2.set_high();
             low2.set_high();
-
             Systick::delay(1.millis()).await;
+
             high1.set_high();
             low1.set_high();
             high2.set_low();
             low2.set_low();
-
             Systick::delay(10.millis()).await;
+
             high1.set_high();
             low1.set_high();
             high2.set_high();
             low2.set_high();
+            Systick::delay(1.millis()).await;
         }
     }
 
-    #[task(local = [switch, dac], priority = 1)]
+    #[task(local = [switch, dac], shared = [disp], priority = 1)]
     async fn audio(cx: audio::Context) {
 
         let switch = cx.local.switch;
         let dac = cx.local.dac;
+        let mut disp = cx.shared.disp;
 
         loop {
 
             if switch.is_low() {
+
+                disp.lock(|disp| {
+
+                    disp.set_bell_state(true);
+                });
 
                 dac.set_dac_fast(PowerDown::Normal, 0x0f0).ok();
                 Systick::delay(1.millis()).await;
 
                 dac.set_dac_fast(PowerDown::Normal, 0x000).ok();
                 Systick::delay(1.millis()).await;
+
+                disp.lock(|disp| {
+
+                    disp.set_bell_state(false);
+                });
             }
             else {
                 Systick::delay(10.millis()).await;
             }
+        }
+    }
+
+    // #[task(shared = [disp], priority = 1)]
+    // async fn disp(cx: disp::Context) {
+
+    //     let mut disp = cx.shared.disp;
+
+    //     const NUMBER: [u16; 10] =
+    //     [
+    //         0123,
+    //         1234,
+    //         2345,
+    //         3456,
+    //         4567,
+    //         5678,
+    //         6789,
+    //         7890,
+    //         8901,
+    //         9012
+    //     ];
+
+    //     loop {
+
+    //         for number in NUMBER {
+
+    //             disp.lock(|disp| {
+
+    //                 disp.toggle_dp();
+    //                 disp.set_4digits(number).ok();
+    //             });
+
+    //             Systick::delay(1000.millis()).await;
+    //         }
+            
+    //     }
+    // }
+
+    #[task(local = [heater_voltage, adc], shared = [disp], priority = 1)]
+    async fn disp(cx: disp::Context) {
+
+        let heater_voltage = cx.local.heater_voltage;
+        let adc = cx.local.adc;
+        let mut disp = cx.shared.disp;
+
+        loop {
+
+            let data: u16 = adc.read( heater_voltage).unwrap();
+            // let data = 1234;
+
+            disp.lock(|disp| {
+
+                disp.toggle_dp();
+                disp.set_4digits(data).ok();
+            });
+
+            Systick::delay(100.millis()).await;
+        }
+    }
+
+    #[task(local = [i2c_bus], shared = [disp], priority = 1)]
+    async fn vfd(cx: vfd::Context) {
+
+        let i2c_bus = cx.local.i2c_bus;
+        let mut disp = cx.shared.disp;
+        
+        let high = Pcf8574::new(
+            i2c_bus.acquire_i2c(), 
+            SlaveAddr::default());
+        let low = Pcf8574::new(
+            i2c_bus.acquire_i2c(), 
+            SlaveAddr::Alternative(false, false, true));
+
+        let mut vfd = VfdDriver::new(high, low);
+
+        loop {
+            
+            Systick::delay(5.millis()).await;
+            
+            disp.lock(|disp| {
+
+                vfd.update(disp).ok();
+            });
         }
     }
 
