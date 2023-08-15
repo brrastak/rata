@@ -21,7 +21,7 @@ bme280 = "0.3.0"
 
 [dependencies.stm32f1xx-hal]
 version = "0.10.0"
-features = ["stm32f103", "rt"]
+features = ["stm32f103", "rt", "medium"]
 
 [dependencies.cortex-m]
 version = "0.7.7"

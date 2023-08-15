@@ -6,12 +6,12 @@ pub struct VfdControl {
     digit: [u16; 5],
 }
 
-pub struct VfdDriver<I2C>
+pub struct VfdDriver<'a, I2C>
 where
     I2C: Write,
 {
-    high: Pcf8574<I2C>,
-    low: Pcf8574<I2C>,
+    high: &'a mut Pcf8574<I2C>,
+    low: &'a mut Pcf8574<I2C>,
     current_pos: usize,
 }
 
@@ -65,11 +65,11 @@ const POSITIONS: [u16; 5] =
 const DP_BELL_POS: usize = 2;
 const NUMBER_OF_POS: usize = 5;
 
-impl<I2C, E> VfdDriver<I2C>
+impl<'a, I2C, E> VfdDriver<'a, I2C>
 where
     I2C: Write<Error = E>,
 {
-    pub fn new(high: Pcf8574<I2C>, low: Pcf8574<I2C>) -> Self {
+    pub fn new(high:&'a mut Pcf8574<I2C>, low:&'a mut Pcf8574<I2C>) -> Self {
 
         VfdDriver {
             high,
