@@ -25,7 +25,9 @@ use pcf857x::{Pcf8574, SlaveAddr};
 use mcp4725::*;
 use shared_bus;
 use embedded_sdmmc::*;
-use bme280::i2c::BME280;
+use bme280::{i2c::BME280, Measurements};
+use core::mem::MaybeUninit;
+use core::marker::PhantomData;
 
 use rata::vfd_driver::{VfdDriver, VfdControl};
 use rata::button::ThreeButtons;
@@ -33,8 +35,11 @@ use rata::button::ThreeButtons;
 
 #[rtic::app(device = stm32f1xx_hal::pac, peripherals = true, dispatchers = [CAN_RX1])]
 mod app {
+
     use super::*;
 
+
+    type SharedBus = shared_bus::BusManager<shared_bus::NullMutex<BlockingI2c<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::I2C1, (Pin<'B', 8, Alternate<OpenDrain>>, Pin<'B', 9, Alternate<OpenDrain>>)>>>;
 
     #[shared]
     struct Shared {
@@ -54,14 +59,24 @@ mod app {
         low2: Pin<'A', 9, Output>,
         heater_voltage: Pin<'B', 1, Analog>,
         dac: MCP4725<BlockingI2c<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::I2C2, (Pin<'B', 10, Alternate<OpenDrain>>, Pin<'B', 11, Alternate<OpenDrain>>)>>,
-        i2c_bus: shared_bus::BusManager<shared_bus::NullMutex<BlockingI2c<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::I2C1, (Pin<'B', 8, Alternate<OpenDrain>>, Pin<'B', 9, Alternate<OpenDrain>>)>>>,
+        // i2c_bus: shared_bus::BusManager<shared_bus::NullMutex<BlockingI2c<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::I2C1, (Pin<'B', 8, Alternate<OpenDrain>>, Pin<'B', 9, Alternate<OpenDrain>>)>>>,
         light_sensor: Pin<'A', 0, Analog>,
         button_col: (Pin<'A', 5>, Pin<'A', 6>, Pin<'A', 7>),
         button_row: (Pin<'B', 12, Output>, Pin<'B', 2, Output>, Pin<'B', 0, Output>),
-        delay: stm32f1xx_hal::timer::Delay<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::TIM2, 1000000>,
+        // i2c_bme: shared_bus::I2cProxy<'static, shared_bus::NullMutex<BlockingI2c<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::I2C1, (Pin<'B', 8, Alternate<OpenDrain>>, Pin<'B', 9, Alternate<OpenDrain>>)>>>,
+        // i2c_high: shared_bus::I2cProxy<'static, shared_bus::NullMutex<BlockingI2c<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::I2C1, (Pin<'B', 8, Alternate<OpenDrain>>, Pin<'B', 9, Alternate<OpenDrain>>)>>>,
+        // i2c_low: shared_bus::I2cProxy<'static, shared_bus::NullMutex<BlockingI2c<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::I2C1, (Pin<'B', 8, Alternate<OpenDrain>>, Pin<'B', 9, Alternate<OpenDrain>>)>>>,
+        high: Pcf8574<shared_bus::I2cProxy<'static, shared_bus::NullMutex<BlockingI2c<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::I2C1, (Pin<'B', 8, Alternate<OpenDrain>>, Pin<'B', 9, Alternate<OpenDrain>>)>>>>,
+        low: Pcf8574<shared_bus::I2cProxy<'static, shared_bus::NullMutex<BlockingI2c<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::I2C1, (Pin<'B', 8, Alternate<OpenDrain>>, Pin<'B', 9, Alternate<OpenDrain>>)>>>>,
+        temp_sensor: BME280<shared_bus::I2cProxy<'static, shared_bus::NullMutex<BlockingI2c<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::I2C1, (Pin<'B', 8, Alternate<OpenDrain>>, Pin<'B', 9, Alternate<OpenDrain>>)>>>, stm32f1xx_hal::timer::Delay<you_must_enable_the_rt_feature_for_the_pac_in_your_cargo_toml::TIM2, 1000000>>,
+
     }
 
-    #[init]
+
+
+    #[init (local = [
+        i2c_bus: MaybeUninit<SharedBus> = MaybeUninit::uninit()
+    ])]
     fn init(cx: init::Context) -> (Shared, Local) {
 
         rtt_init_print!();
@@ -148,8 +163,25 @@ mod app {
             10,
             1000,
             1000);
-        let i2c_bus = shared_bus::BusManagerSimple::new(i2c);
-  
+        // let i2c_bus = shared_bus::BusManagerSimple::new(i2c);
+        let i2c_bus: &'static mut _ = cx.local.i2c_bus.write(shared_bus::BusManagerSimple::new(i2c)
+        );
+        // let i2c_bme = i2c_bus.acquire_i2c();
+        // let i2c_high = i2c_bus.acquire_i2c();
+        // let i2c_low = i2c_bus.acquire_i2c();
+
+        let high = Pcf8574::new(
+            i2c_bus.acquire_i2c(), 
+            SlaveAddr::default());
+        let low = Pcf8574::new(
+            i2c_bus.acquire_i2c(), 
+            SlaveAddr::Alternative(false, false, true));
+
+        let temp_sensor = BME280::new_primary(
+            i2c_bus.acquire_i2c(), 
+            delay);
+
+
         let audio_i2c = BlockingI2c::i2c2(
             cx.device.I2C2,
             (i2c2_sck, i2c2_sda),
@@ -186,11 +218,12 @@ mod app {
         beep::spawn().ok();
         // usb::spawn().ok();
         heater::spawn().ok();
+        vfd::spawn().ok();
         audio::spawn().ok();
         // voltage::spawn().ok();
-        vfd::spawn().ok();
         // light::spawn().ok();
-        button::spawn().ok();
+        // button::spawn().ok();
+        temp::spawn().ok();
 
         (
             Shared {
@@ -207,11 +240,13 @@ mod app {
                 low2,
                 heater_voltage,
                 dac,
-                i2c_bus,
+                // i2c_bus,
                 light_sensor,
                 button_col,
                 button_row,
-                delay
+                high,
+                low,
+                temp_sensor,
             },
         )
 
@@ -507,25 +542,41 @@ mod app {
         }
     }
 
-    #[task(shared = [disp], local = [i2c_bus, delay], priority = 1)]
+    #[task(shared = [disp], local = [temp_sensor], priority = 1)]
+    async fn temp(cx: temp::Context) {
+
+        let temp_sensor = cx.local.temp_sensor;
+        let mut disp = cx.shared.disp;
+
+        loop {
+            
+            let temp = match temp_sensor.measure()
+            {
+                Ok(mes) => mes.temperature,
+                Err(_) => 36.6
+            };
+            let temp = ((temp * 10.0) % 1_000.0) as u16 * 10;
+
+            disp.lock(|disp| {
+
+                disp.toggle_dp();
+                disp.set_4digits(temp).ok();
+            });
+
+            Systick::delay(200.millis()).await;
+        }
+    }
+
+    #[task(shared = [disp], local = [high, low], priority = 1)]
     async fn vfd(cx: vfd::Context) {
 
-        let i2c_bus = cx.local.i2c_bus;
-        let mut delay = cx.local.delay;
+        // let i2c_bus = cx.local.i2c_bus;
         let mut disp = cx.shared.disp;
-        
-        let high = Pcf8574::new(
-            i2c_bus.acquire_i2c(), 
-            SlaveAddr::default());
-        let low = Pcf8574::new(
-            i2c_bus.acquire_i2c(), 
-            SlaveAddr::Alternative(false, false, true));
+        let high = cx.local.high;
+        let low = cx.local.low;
 
-        // let temp_sensor = BME280::new_primary(
-        //     i2c_bus.acquire_i2c(), 
-        //     *delay);
+        // let mut delay = cortex_m::asm::delay;
         
-
         let mut vfd = VfdDriver::new(high, low);
 
         loop {
